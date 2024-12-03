@@ -10,7 +10,7 @@ import instructor
 from openai import OpenAI
 
 # Constants
-API_ENDPOINT = "https://ocr.api.mx2.law/doc/{}/text"
+API_ENDPOINT = "https://ocr.api.mx2.law/doc/{}/text?token={}"
 API_TOKEN = st.secrets["API_KEY"]
 
 # Initialize OpenAI client with instructor
@@ -307,9 +307,9 @@ def get_document_text(document_id: str) -> str:
     """Fetch document text from API."""
     headers = {
         'accept': 'application/json',
-        'Authorization': f'Bearer {API_TOKEN}'
+        # 'Authorization': f'Bearer {API_TOKEN}'
     }
-    response = requests.get(API_ENDPOINT.format(document_id), headers=headers)
+    response = requests.get(API_ENDPOINT.format(document_id, API_TOKEN), headers=headers)
     if response.status_code == 200:
         return response.json()['text']
     else:
