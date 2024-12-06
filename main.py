@@ -3,27 +3,30 @@ import requests
 import pandas as pd
 import json
 from datetime import datetime, timedelta
-from pydantic import BaseModel, Field, ValidationError, field_validator, ValidationInfo
-from typing import List, Optional, Dict, Union
+from pydantic import BaseModel, Field, ValidationError, field_validator, ValidationInfo, PrivateAttr
+from pydantic.main import create_model
+from typing import List, Optional, Dict
 from enum import Enum
 import instructor
 from openai import OpenAI
+from langsmith import wrappers, traceable
 
 # Constants
 API_ENDPOINT = "https://ocr.api.mx2.law/doc/{}/text?token={}"
+COMPLAINT_API_ENDPOINT = "https://sf-sync.api.mx2.dev/doc/{}/complaint-filed?salesforce_env=prod&token={}"
 API_TOKEN = st.secrets["API_KEY"]
 
 # Initialize OpenAI client with instructor
-client = instructor.patch(OpenAI(api_key=st.secrets["OPENAI_API_KEY"]))
+client = instructor.patch(wrappers.wrap_openai(OpenAI(api_key=st.secrets["OPENAI_API_KEY"])))
 
 # Enums
 class CircuitCourtNumber(BaseModel):
-    number: int = Field(..., description="The circuit court number, should be between 1 and 100.")
+    number: int = Field(..., description="The circuit court number, should be between 1 and 20.")
     
     @field_validator('number')
     def validate_circuit_court_number(cls, value):
-        if not (1 <= value <= 100):
-            raise ValueError("Circuit court number should always be between 1 and 100.")
+        if not (1 <= value <= 20):
+            raise ValueError("Circuit court number should always be between 1 and 20.")
         return value
 
 class JuryOrNonJuryEnum(str, Enum):
@@ -67,7 +70,7 @@ class EventTypeEnum(str, Enum):
     SURVEILLANCE_NOTICE = "Notice of Compliance - Disclosure of Surveillance Deadline"
     DISPOSITIVE_MOTIONS = "Dispositive Motions Filed and Served Deadline"
     SUMMARY_JUDGMENT = "Summary Judgment Motions Filed and Served Deadline"
-    EXPERT_DISCOVERY = "Expert Discovery and Response Deadline"
+    EXPERT_DISCOVERY = "Expert Discovery and Response Deadline/Discovery Deadline"
     DAUBERT_MOTIONS = "Daubert Motions Filed and Served Deadline"
     FACT_DISCOVERY = "Completion of Fact Discovery Deadline"
     DAUBERT_NOTICE = "Daubert Notice and Hearing Deadline"
@@ -157,16 +160,15 @@ class EventDetail(BaseModel):
     event_details: Optional[str] = Field(None, description="The full passage of text that includes the details of the event including information about deadline, deadline conditions and deadline reference/anchor date details too.")
     party_type: Optional[PartyTypeEnum] = Field(None, description="The party involved, for eg: (Plaintiff/Defendant/Both).")
     number_of_days: Optional[int] = Field(None, description="Number of days before or after or on the anchor date present in the event details. If not found or there are no days mentioned or some other time unit mentioned, would be 0")
-    condition: Optional[ConditionEnum] = Field(None, description="Relation to the anchor date (After/Before/On) mentioned in the event details.")
+    condition: Optional[ConditionEnum] = Field(None, description="Relation to the anchor date (After/Before/On) mentioned in the event details. If not specified, leave as null.")
     anchor_date: Optional[datetime] = Field(
         None,
-        description="ONLY use this for absolute dates present directly like e_file_date. For dates that depend on other event dates/deadlines (e.g., discovery deadline etc), use depends_on instead."
+        description="IF complaint filed date value is available, this will be equal to that. ONLY use this for absolute dates present directly like complaint_filed_date or e_file_date. For dates that depend on other event dates/deadlines (e.g., discovery deadline etc), use depends_on instead."
     )
-    depends_on: Optional[str] = Field(
+    depends_on: Optional[EventTypeEnum] = Field(
         None,
-        description="The field name of the event this depends on. REQUIRED for events that depend on other deadlines (e.g., if event happens after discovery deadline, set this to 'expert_discovery_and_response_deadline')."
+        description="The event type this deadline depends on. REQUIRED for events that depend on other deadlines"
     )
-    # depends_on: Optional[EventTypeEnum] = Field(None, description="The event type this deadline depends on, if mentioned in the event description")
     event_date: Optional[datetime] = Field(None, description="The calculated event date. Do not set this directly unless exact date is present.")
 
     @field_validator('anchor_date')
@@ -183,22 +185,26 @@ class EventDetail(BaseModel):
             raise ValueError("Cannot set both depends_on and anchor_date.")
         return v
 
+    @traceable(name="Calculate Date")
     def calculate_date(self, base_date: datetime) -> Optional[datetime]:
         """Calculate date based on base_date and conditions."""
-
         if not base_date or not self.condition or self.number_of_days is None:
-            print(f"Base Date: {base_date}, Condition: {self.condition}, No. of Days: {self.number_of_days}")
+            print(f"Event Name: {self.event_type}, Base Date: {base_date}, Condition: {self.condition}, No. of Days: {self.number_of_days}")
             return None
 
         try:
+            base_date = base_date.replace(hour=0, minute=0, second=0, microsecond=0)
             if self.condition == ConditionEnum.AFTER:
-                return base_date + timedelta(days=self.number_of_days)
+                print(f"Calculating date after {self.number_of_days} days from {base_date} for {self.event_type}")
+                calculate_date = base_date + timedelta(days=(self.number_of_days))
+                return calculate_date
             elif self.condition == ConditionEnum.BEFORE:
-                return base_date - timedelta(days=self.number_of_days)
+                calculate_date = base_date - timedelta(days=self.number_of_days)
+                return calculate_date
             elif self.condition == ConditionEnum.ON:
                 return base_date
         except Exception as e:
-            print(f"Error calculating date for {self.event_name}: {e}")
+            print(f"Error calculating date for {self.event_type}: {e}")
             return None
 
     @field_validator('number_of_days')
@@ -211,92 +217,144 @@ class CaseManagementOrder(BaseModel):
     circuit_court: Optional[CircuitCourtNumber] = Field(None, description="The circuit court number in which the case is being litigated, should be between 1 and 100.")
     case_number: Optional[str] = Field(None, description="The court case number, a unique identifier for the court system assigned to the case.")
     e_file_date: Optional[datetime] = Field(None, description="The calendar date on which this document was filed electronically")
-    # events: Dict[EventTypeEnum, EventDetail] = Field(default_factory=dict, description="Dictionary of all events in this CMO")
+    _complaint_filed_date: Optional[datetime] = PrivateAttr(default=None)
     projected_trial_date: Optional[datetime] = Field(None, description="The calendar date of the trial")
     jury_or_non_jury_trial: Optional[JuryOrNonJuryEnum] = Field(None, description="If the trial identifies as 'Jury' or 'Non-Jury' or 'Unknown'. If the text does not contain any mention, identify as 'Unknown'.")
     number_of_trial_days: Optional[int] = Field(None, description="The number of days the trial will go on for.")
     case_management_order_track: Optional[CaseManagementTrackEnum] = Field(None, description="The track the trial is on (standard/general, streamlined/expedited, differentiated/complex).")
     # case_management_plan: Optional[str] = Field(None, description="Required for 9th Circuit, indicates the type of plan being used")
 
-    perfect_service_of_process_deadline: Optional[EventDetail] = Field(
-        None, description="Perfect Service of Process Deadline details in MM/DD/YYYY format."
-    )
-    fact_witness_and_exhibit_list: Optional[EventDetail] = Field(
-        None, description="Fact Witness and Exhibit List details."
-    )
-    disclosure_of_expert_witnesses_deadline: Optional[EventDetail] = Field(
-        None, description="Disclosure of Expert Witnesses Deadline details in MM/DD/YYYY format."
-    )
-    expert_discovery_and_response_deadline: Optional[EventDetail] = Field(
-        None, description="Expert Discovery and Response Deadline details in MM/DD/YYYY format."
-    )
-    attorney_meet_exchange_inspect_pretrial_stipulation_deadline: Optional[EventDetail] = Field(
-        None, description="Attorney Meet/Exchange/Inspect/Pretrial Stipulation Deadline details in MM/DD/YYYY format."
-    )
-    dispositive_motions_filed_deadline: Optional[EventDetail] = Field(
-        None, description="Dispositive Motions Filed Deadline details in MM/DD/YYYY format."
-    )
-    dispositive_motion_heard_deadline: Optional[EventDetail] = Field(
-        None, description="Dispositive Motion Heard Deadline details in MM/DD/YYYY format."
-    )
-    motions_directed_to_the_pleading_filed_and_heard_deadline: Optional[EventDetail] = Field(
-        None, description="Motions directed to the Pleading Filed and Heard Deadline details in MM/DD/YYYY format."
-    )
-    open_motion_calendar_deadline: Optional[EventDetail] = Field(
-        None, description="Open Motion Calendar Deadline details in MM/DD/YYYY format."
-    )
-    mediation_completed_deadline: Optional[EventDetail] = Field(
-        None, description="Mediation Completed Deadline details in MM/DD/YYYY format."
-    )
-    motions_in_limine_noticed_and_heard_deadline: Optional[EventDetail] = Field(
-        None, description="Motions in Limine Noticed and Heard Deadline details in MM/DD/YYYY format."
-    )
-    def calculate_dates(self):
-        if not self.e_file_date:
-            return
+    @classmethod
+    def create_model_for_circuit(cls, circuit_number: int):
+        # Get valid events for this circuit
+        valid_events = {
+            event_type for event_type, circuits in EVENT_CIRCUIT_MAPPINGS.items()
+            if circuit_number in circuits
+        }
+        # print(f"Valid events for circuit {circuit_number}: {valid_events}")
+        # Create a modified EventDetail class specific to this circuit
+        class CircuitEventDetail(EventDetail):
+            event_type: EventTypeEnum = Field(..., description="The type of event from the predefined list")
+            depends_on: Optional[EventTypeEnum] = Field(
+                None,
+                description="The event type this deadline depends on based on event details. REQUIRED for events that depend on other deadlines. If dependency is present, it can only be one out of the valid events: {valid_events} ",
+                json_schema_extra={
+                    "enum": list(valid_events)
+                }
+            )
 
+            @field_validator('depends_on')
+            def validate_depends_on(cls, v):
+                if v is None:
+                    return v
+                if v not in valid_events:
+                    raise ValueError(f"Event {v} is not valid for this circuit")
+                return v
+
+            @field_validator('event_type')
+            def validate_event_type(cls, v):
+                if v not in valid_events:
+                    raise ValueError(f"Event type {v} is not valid for this circuit")
+                return v
+        
+        # Generate fields for valid events in this circuit    
+        fields = {
+            event_type.name.lower(): (Optional[CircuitEventDetail], Field(None, description=f"{event_type.value} details"))
+            for event_type in valid_events
+        }
+        return create_model('DynamicCaseManagementOrder', **fields, __base__=cls)
+
+    @property
+    def complaint_filed_date(self) -> Optional[datetime]:
+        """Get the complaint filed date."""
+        return self._complaint_filed_date
+    def set_complaint_filed_date(self, date: Optional[datetime]):
+        """Set the complaint filed date."""
+        self._complaint_filed_date = date
+        # Recalculate dates when complaint filed date changes
+        if date:
+            self.calculate_dates()
+    @traceable(name="Calculate Dates")
+    def calculate_dates(self):
+        """Calculate all event dates."""
+        if not self.e_file_date and not self._complaint_filed_date:
+            print(f"No complaint filed date set. Cannot calculate dates. {self._complaint_filed_date} or {self.e_file_date}")
+            return
+        
+        # Get all EventDetail instances from __dict__
+        events = {
+            name: event for name, event in self.__dict__.items() 
+            if isinstance(event, EventDetail)
+        }
+
+        # Track which events have been calculated
         calculated = set()
-        events = {name: field for name, field in self.__dict__.items() if isinstance(field, EventDetail)}
+        # Create dependency graph for debugging
+        dependency_graph = {
+            event_type: event.depends_on
+            for event_type, event in events.items()
+        }
+        # print(f"Processing events with dependencies: {dependency_graph}")
+
+        # Loop until all events are calculated or no more progress can be made
         while len(calculated) < len(events):
             progress_made = False
 
-            for event_name, event in events.items():
-                if event_name in calculated:
+            for event_type, event in events.items():
+                if event_type in calculated:
                     continue
 
                 try:
                     base_date = None
+                    # Handle exact dates first
+                    # if event.event_date:
+                    #     calculated.add(event_type)
+                    #     continue
+
+                    # Handle anchor dates next
                     if event.anchor_date:
                         base_date = event.anchor_date
+                        # event.event_date = event.anchor_date
+                        # calculated.add(event_type)
+                        # continue
+
                     elif event.depends_on:
-                        dep_event = events.get(event.depends_on)
-                        if not dep_event:
-                            print(f"Warning: Referenced event {event.depends_on} not found")
+                        # Get the dependent event
+                        dep_event = events.get(event.depends_on.name.lower())
+                        if not dep_event or not dep_event.event_date:
+                            print(f"Warning: Event {event_type} depends on missing event {event.depends_on}")
                             continue
                         if not dep_event.event_date:
+                            # Skip if dependent event not calculated yet
                             continue
                         base_date = dep_event.event_date
                     else:
-                        base_date = self.e_file_date
+                        # Default to filing date if no dependencies
+                        base_date = self._complaint_filed_date if self._complaint_filed_date is not None else self.e_file_date
 
-                    if base_date:
+                    # Calculate the date
+                    if base_date and event.condition and event.number_of_days is not None:
                         event.event_date = event.calculate_date(base_date)
                         if event.event_date:
-                            calculated.add(event_name)
+                            calculated.add(event_type)
                             progress_made = True
-                            print(f"Calculated {event_name}: {event.event_date} (based on: {event.depends_on or 'filing_date'})")
+                            print(f"Calculated {event_type}: {event.event_date} "
+                                  f"(based on: {event.depends_on or 'anchor_date' if event.anchor_date else 'filing_date'})")
 
                 except Exception as e:
-                    print(f"Error calculating {event_name}: {str(e)}")
+                    print(f"Error calculating {event_type}: {str(e)}")
 
+            # If no progress was made in this iteration, we're stuck
             if not progress_made:
                 remaining = set(events.keys()) - calculated
                 print(f"Warning: Could not calculate dates for: {remaining}")
+                print("Dependency graph for remaining events:")
+                for event_type in remaining:
+                    print(f"{event_type} depends on: {dependency_graph.get(event_type)}")
                 break
 
     def __init__(self, **data):
         super().__init__(**data)
-        self.calculate_dates()
 
     @field_validator('number_of_trial_days')
     def validate_trial_days(cls, value):
@@ -316,25 +374,82 @@ def get_document_text(document_id: str) -> str:
         st.error(f"Error fetching document: {response.status_code}")
         return None
 
-def process_text(text: str) -> pd.DataFrame:
+def get_complaint_filed_date(document_id: str) -> Optional[datetime]:
+    """Fetch complaint filed date from API."""
+    headers = {
+        'accept': 'application/json'
+    }
+    response = requests.get(COMPLAINT_API_ENDPOINT.format(document_id, API_TOKEN), headers=headers)
+    if response.status_code == 200:
+        complaint_date = response.json()
+        if complaint_date:
+            # First convert YYYY-MM-DD to MM/DD/YYYY string
+            date_str = datetime.strptime(complaint_date, "%Y-%m-%d").strftime("%m/%d/%Y")
+            # Then convert to datetime object in MM/DD/YYYY format
+            return datetime.strptime(date_str, "%m/%d/%Y")
+        else:
+            return None
+    return None
+
+def process_text(text: str, complaint_date: datetime) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Process text using LLM and return formatted dataframe."""
     try:
-        # Use your existing extraction logic here
-        cmo_assessment = client.chat.completions.create(
-            model="gpt-4o",
-            response_model=CaseManagementOrder,
+        # First extraction - just get circuit number
+        circuit_info = client.chat.completions.create(
+            model="gpt-4o-mini",
+            response_model=CircuitCourtNumber,
             temperature=0,
             messages=[
-                {"role": "system", "content": "Extract the most accurate answers to the assessment questions based on the text."},
+                {"role": "system", "content": "Extract only the circuit court number from the text."},
                 {"role": "user", "content": text},
             ],
         )
         
+        # Get applicable events for this circuit
+        circuit_num = circuit_info.number
+        DynamicCMO = CaseManagementOrder.create_model_for_circuit(circuit_num)
+
+        # Use your existing extraction logic here
+        cmo_assessment = client.chat.completions.create(
+            model="gpt-4o",
+            response_model=DynamicCMO,
+            temperature=0,
+            messages=[
+                {"role": "system", "content": f"Extract the most accurate answers to the assessment questions based on the text. The complaint_filed_date is {complaint_date}."},
+                {"role": "user", "content": text},
+            ],
+        )
+
+        # Create instance
+        cmo_data = cmo_assessment.dict()
+        
+        # If we have complaint_date, set it as e_file_date before creating instance
+        if complaint_date:
+            cmo_data['e_file_date'] = complaint_date
+
+        # Create instance and set complaint date after LLM extraction
+        cmo_instance = DynamicCMO(**cmo_assessment.dict())
+        if complaint_date:
+            cmo_instance.set_complaint_filed_date(complaint_date)
+
+        cmo_instance.calculate_dates()
+        
         # Convert to DataFrame
         display_rows = []
         csv_rows = []
-        response_data = cmo_assessment.dict()
-        
+        response_data = cmo_instance.dict()
+
+        # Add complaint_filed_date to the display and CSV data
+        if cmo_instance.complaint_filed_date:
+            display_rows.append({
+                "Field": "complaint_filed_date",
+                "Value": format_date(cmo_instance.complaint_filed_date)
+            })
+            csv_rows.append({
+                "Field": "complaint_filed_date",
+                "Value": format_date(cmo_instance.complaint_filed_date)
+            })
+
         for key, value in response_data.items():
             if isinstance(value, dict):  # EventDetail
                 sub_dict = {
@@ -361,7 +476,7 @@ def process_text(text: str) -> pd.DataFrame:
         display_df = pd.DataFrame(display_rows)
         csv_df = pd.DataFrame(csv_rows)
         display_df.fillna('', inplace=True)
-        csv_df.fillna('', inplace=True)
+        csv_df.fillna('', inplace=True)       
         return display_df, csv_df
         
     except Exception as e:
@@ -392,30 +507,66 @@ st.title("Case Management Order Extraction")
 # Input field for document ID with persistent key
 document_id = st.text_input("Enter Document ID (e.g., aDu3c00000DYjjiCAD)", key="doc_id_input")
 
+# Initialize session state for dataframe if not exists
+if 'edited_df' not in st.session_state:
+    st.session_state.edited_df = pd.DataFrame()
+
 if st.button("Process Document"):
     if document_id:
         with st.spinner("Fetching document..."):
             text = get_document_text(document_id)
+            complaint_date = get_complaint_filed_date(document_id)
+            if complaint_date:
+                st.info(f"Complaint Filed Date: {complaint_date}")
             
         if text:
             with st.spinner("Processing text..."):
-                display_df, csv_df = process_text(text)
+                display_df, csv_df = process_text(text, complaint_date)
                 
             if display_df is not None and csv_df is not None:
                 st.success("Document processed successfully!")
-                
-                # Display the formatted data
-                st.subheader("Extracted Information")
-                st.dataframe(display_df, use_container_width=True)
-                
-                # Add download button with CSV-optimized data
-                csv = csv_df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    "Download CSV",
-                    csv,
-                    f"case_management_order_{document_id}.csv",
-                    "text/csv",
-                    key='download-csv'
-                )
-    else:
-        st.warning("Please enter a document ID")
+                display_df['Correct'] = False
+                st.session_state.edited_df = display_df
+                st.session_state.csv_df = csv_df
+
+# Display the dataframe if it exists
+if not st.session_state.edited_df.empty:
+    st.subheader("Extracted Information")
+
+    # Apply row highlighting based on checkbox state
+    def highlight_completed(row):
+        return ['background-color: #90EE90' if row['Correct'] else '' for _ in row]
+    
+    styled_df = st.session_state.edited_df.style.apply(highlight_completed, axis=1)
+
+    edited_df = st.data_editor(
+        styled_df,
+        column_config={
+            "Correct": st.column_config.CheckboxColumn(
+                "Correct",
+                help="Mark as completed",
+                default=False,
+            )
+        },
+        use_container_width=True,
+        height=600,
+        hide_index=True,
+        disabled=False,
+        key="data_editor"
+    )
+    st.session_state.edited_df = edited_df
+
+    # st.dataframe(styled_df, use_container_width=True)
+    
+    # Add download button with CSV-optimized data
+    if 'csv_df' in st.session_state:
+        csv = st.session_state.csv_df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            "Download CSV",
+            csv,
+            f"case_management_order_{document_id}.csv",
+            "text/csv",
+            key='download-csv'
+        )
+else:
+    st.warning("Please enter a document ID")
