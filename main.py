@@ -18,14 +18,14 @@ COMPLAINT_API_ENDPOINT = "https://sf-sync.api.mx2.dev/doc/{}/complaint-filed?sal
 API_TOKEN = st.secrets["API_KEY"]
 
 MODEL_CONFIGS = {
+    "GPT-4o": {
+        "provider": "openai",
+        "model": "gpt-4o"
+    },
     "Claude-3-Sonnet": {
         "provider": "anthropic",
         "model": "claude-3-5-sonnet-20241022"
     },
-    "GPT-4o": {
-        "provider": "openai",
-        "model": "gpt-4o"
-    }
 }
 
 # Initialize OpenAI client with instructor
@@ -69,108 +69,174 @@ class ConditionEnum(str, Enum):
     ON = "On"
 
 class EventTypeEnum(str, Enum):
-    """All possible event types based on the Picklist Values"""
+    """All possible event types based on deadline fields with specific circuit court assignments"""
+    # Trial and Court Related Deadlines
     TRIAL_START = "Trial Start Date"
     PRE_TRIAL_CONFERENCE = "Pre-Trial Conference Date"
+    TRIAL_DAYS = "Trial Days"
     PERFECT_SERVICE = "Perfect Service of Process Deadline"
-    AGREED_CASE_MANAGEMENT = "Filing of Agreed Case Management Plan/Order"
+    SERVICE_COMPLAINT = "Service of Complaint Deadline"
+    SERVICE_EXTENSION = "Service under any Extension of Time Deadline"
+    SERVICE_NEW_PARTIES = "Service to Add New Parties Deadline"
+    ADD_NEW_PARTIES = "Add New Parties Deadline"
+    
+    # Discovery Related Deadlines
     DISCOVERY_NOTICE = "Discovery Notice of Compliance Deadline"
-    FACT_WITNESSES = "Disclosure of Fact Witnesses"
+    SERVICE_DISCOVERY_REQUESTS = "Service of Written Discovery Requests Deadline"
+    ALL_DISCOVERY = "All Discovery Deadline"
+    PROPOUNDING_REQUESTS = "Deadline for Propounding Requests for Production, Requests to Admit and Interrogatories"
+    FACT_DISCOVERY = "Completion of Fact Discovery Deadline"
+    
+    # Witness Related Deadlines
+    FACT_WITNESSES = "Disclosure of Fact Witnesses Deadline"
     FACT_WITNESS_NOTICE = "Fact Witness Notice of Compliance Deadline"
     EXPERT_WITNESSES = "Disclosure of Expert Witnesses Deadline"
-    AMEND_PLEADINGS = "Motions to Amend Pleadings Deadline"
-    FABRE_DEFENDANTS = "Identification of Fabre Defendants Deadline"
+    EXPERT_WITNESSES_CME = "Expert Witnesses and CME Deadline"
+    FINAL_TRIAL_WITNESSES = "Disclosure of Final Trial Witnesses Deadline"
+    TRIAL_WITNESS_NOTICE = "Final Trial Witnesses Deadline- Notice of Compliance"
+    
+    # Expert Related Deadlines
     PLAINTIFF_REBUTTAL = "Filing of Plaintiff Rebuttal Experts Deadline"
-    MEDIATOR_AGREED = "Mediator Date Agreed To Deadline"
-    CME_EXAM = "CME Exam Compleiton Deadline"
-    CME_REPORT = "CME Report Provided to Plaintiff Deadline"
-    FACT_WITNESS_LIST = "Fact Witness and Exhibit List Deadline"
-    SURVEILLANCE = "Disclosure of Surveillance Deadline"
-    SURVEILLANCE_NOTICE = "Notice of Compliance - Disclosure of Surveillance Deadline"
-    DISPOSITIVE_MOTIONS = "Dispositive Motions Filed and Served Deadline"
-    SUMMARY_JUDGMENT = "Summary Judgment Motions Filed and Served Deadline"
+    DEFENDANT_REBUTTAL = "Filing of Defendant Rebuttal Experts Deadline"
     EXPERT_DISCOVERY = "Expert Discovery and Response Deadline/Discovery Deadline"
-    DAUBERT_MOTIONS = "Daubert Motions Filed and Served Deadline"
-    FACT_DISCOVERY = "Completion of Fact Discovery Deadline"
-    DAUBERT_NOTICE = "Daubert Notice and Hearing Deadline"
-    DAUBERT_HEARING = "Daubert Hearing Date completed"
-    NORTHRUP_MATERIALS = "Disclosure of Northrup Impeachment Materials deadline"
-    FINAL_TRIAL_WITNESSES = "Final Trial Witnesses"
-    TRIAL_WITNESS_NOTICE = "Final Trial Witness List - Notice of Compliance"
-    TRIAL_PREPARATION = "Exchange Between Parties for Trial Preparation Deadline"
-    TRIAL_PREPARATION_NOTICE = "Exchange Between Parties for Trial Preparation - Notice of Compliance Deadline"
+    EXPERT_OPINION = "Expert Opinion to Opposing Party Deadline"
+    
+    # Motion Related Deadlines
+    AMEND_PLEADINGS = "Motions to Amend Pleadings Deadline"
+    DISPOSITIVE_MOTIONS = "Dispositive Motions Filed and Served Deadline"
+    DISPOSITIVE_MOTIONS_FILED = "Dispositive Motions Filed Deadline"
+    DISPOSITIVE_MOTIONS_HEARD = "Dispositive Motion Heard Deadline"
+    SUMMARY_JUDGMENT = "Summary Judgment Motions Filed and Served Deadline"
     SUMMARY_JUDGMENT_HEARD = "Motion for Summary Judgement Heard Deadline"
-    ALL_MOTIONS = "All Motions Noticed and Heard Deadline"
-    DEPO_DESIGNATIONS = "Plaintiff/Defendant exchange and filing of Notice of Depo Designations Deadline"
-    COUNTER_DESIGNATIONS = "Objections and Counter designations Deadline"
-    MEDIATION = "Mediation Completed Deadline"
-    ATTORNEY_MEET = "Attorney Meet/Exchange/Inspect/Pretrial Stipulation Deadline"
-    DEPO_OBJECTIONS = "Objections to Depo Designations Notice and Heard Deadline"
+    PLEADING_MOTIONS = "Motions directed to the Pleading Filed and Heard Deadline"
     MOTIONS_IN_LIMINE = "Motions in Limine Noticed and Heard Deadline"
     MOTIONS_IN_LIMINE_NOTICE = "Motions in Limine Noticed Date Deadline"
-    MOTIONS_IN_LIMINE_HEARING = "Motions in Limine Hearing Date"
-    DEFENDANT_REBUTTAL = "Filing of Defendant Rebuttal Experts"
-    EXHIBITS_LIST = "Exhibits List Deadline"
-    JURY_INSTRUCTIONS = "Proposed Jury Instruction and Verdict Form Deadline"
-    SERVE_SCHEDULING = "Order to Serve Scheduling Order Deadline"
-    DISPOSITIVE_MOTIONS_FILED = "Dispositive Motions Filed Deadline"
-    DISPOSITIVE_MOTIONS_SERVED = "Dispositive Motion Served Deadline"
-    DISPOSITIVE_MOTIONS_HEARD = "Dispositive Motion Heard Deadline"
-    PLEADING_MOTIONS = "Motions directed to the Pleading Filed and Heard Deadline"
+    ALL_MOTIONS = "All Motions Noticed and Heard Deadline"
     OPEN_MOTION_CALENDAR = "Open Motion Calendar Deadline"
     OBJECTIONS_TO_PLEADINGS = "Objections to Pleadings Deadline"
+    
+    # Daubert Related Deadlines
+    DAUBERT_MOTIONS = "Daubert Motions Filed and Served Deadline"
+    DAUBERT_NOTICE = "Daubert Notice and Hearing Deadline"
+    
+    # Medical Examination Deadlines
+    CME_EXAM = "CME Exam Completion Deadline"
+    CME_REPORT = "CME Report Provided to Plaintiff Deadline"
+    
+    # Evidence and Exhibit Related Deadlines
+    FACT_WITNESS_LIST = "Fact Witness and Exhibit List Deadline"
+    EXHIBITS_LIST = "Exhibits List Deadline"
+    SURVEILLANCE = "Disclosure of Surveillance Deadline"
+    SURVEILLANCE_NOTICE = "Notice of Compliance - Disclosure of Surveillance Deadline"
+    NORTHRUP_MATERIALS = "Disclosure of Northrup Impeachment Materials deadline"
+    
+    # Deposition Related Deadlines
+    DEPO_DESIGNATIONS = "Plaintiff/Defendant exchange and filing of Notice of Depo Designations Deadline"
+    COUNTER_DESIGNATIONS = "Objections and Counter Designations Deadline"
+    DEPO_OBJECTIONS = "Objections to Depo Designations Notice and Heard Deadline"
+    
+    # Trial Preparation Deadlines
+    TRIAL_PREPARATION = "Exchange Between Parties for Trial Preparation Deadline"
+    TRIAL_PREPARATION_NOTICE = "Exchange Between Parties for Trial Preparation - Notice of Compliance Deadline"
+    ATTORNEY_MEET = "Attorney Meet/Exchange/Inspect/Pretrial Stipulation Deadline"
+    JURY_INSTRUCTIONS = "Proposed Jury Instruction and Verdict Form Deadline"
+    
+    # Case Management Deadlines
+    AGREED_CASE_MANAGEMENT = "Filing of Agreed Case Management Plan/Order"
+    CERTIFICATION_REQUIREMENT = "Compliance with Certification Requirement Uniform CMO Deadline"
+    STATEMENT_FACTS = "Statement of Facts and Counterclaims Deadline"
+    DISPUTED_FACTS = "Identification of Facts to be Disputed Deadline"
+    IDENTIFICATION_ISSUES = "Identification of Issues Deadline"
+    
+    # Alternative Dispute Resolution Deadlines
+    MEDIATOR_AGREED = "Mediator Date Agreed To Deadline"
+    MEDIATION = "Mediation Completed Deadline"
+    FABRE_DEFENDANTS = "Identification of Fabre Defendants Deadline"
 
 # Event Circuit Mappings
 EVENT_CIRCUIT_MAPPINGS = {
+    # Trial and Court Related
     EventTypeEnum.TRIAL_START: set(range(1, 21)),  # All circuits
-    EventTypeEnum.PRE_TRIAL_CONFERENCE: {9, 11, 16, 18},
-    EventTypeEnum.PERFECT_SERVICE: {9, 16, 18},
-    EventTypeEnum.AGREED_CASE_MANAGEMENT: {18},
+    EventTypeEnum.PRE_TRIAL_CONFERENCE: {1, 9, 11, 12, 15, 16, 17, 18, 20},
+    EventTypeEnum.TRIAL_DAYS: {1, 3, 17, 18, 20},
+    EventTypeEnum.PERFECT_SERVICE: {3, 4, 6, 7, 8, 9, 10, 12, 15, 16, 18},
+    EventTypeEnum.SERVICE_COMPLAINT: {2, 3, 4, 10},
+    EventTypeEnum.SERVICE_EXTENSION: {2, 3, 4},
+    EventTypeEnum.SERVICE_NEW_PARTIES: {2},
+    EventTypeEnum.ADD_NEW_PARTIES: {2, 3, 7, 8, 10},
+    
+    # Discovery Related
     EventTypeEnum.DISCOVERY_NOTICE: {18},
-    EventTypeEnum.FACT_WITNESSES: {11, 18, 20},
+    EventTypeEnum.SERVICE_DISCOVERY_REQUESTS: {7},
+    EventTypeEnum.ALL_DISCOVERY: {1, 4, 14},
+    EventTypeEnum.PROPOUNDING_REQUESTS: {3},
+    EventTypeEnum.FACT_DISCOVERY: {6, 7, 10, 11, 15, 17, 18, 20},
+    
+    # Witness Related
+    EventTypeEnum.FACT_WITNESSES: {1, 7, 11, 17, 18, 20},
     EventTypeEnum.FACT_WITNESS_NOTICE: {18},
-    EventTypeEnum.EXPERT_WITNESSES: {11, 16, 18},
-    EventTypeEnum.AMEND_PLEADINGS: {9, 16, 18},
-    EventTypeEnum.FABRE_DEFENDANTS: {18},
-    EventTypeEnum.PLAINTIFF_REBUTTAL: {11, 18},
-    EventTypeEnum.MEDIATOR_AGREED: {18},
-    EventTypeEnum.CME_EXAM: {11, 18},
-    EventTypeEnum.CME_REPORT: {18},
-    EventTypeEnum.FACT_WITNESS_LIST: {9, 16, 18},
-    EventTypeEnum.SURVEILLANCE: {18},
-    EventTypeEnum.SURVEILLANCE_NOTICE: {18},
-    EventTypeEnum.DISPOSITIVE_MOTIONS: {9, 16, 18},
-    EventTypeEnum.SUMMARY_JUDGMENT: {18},
-    EventTypeEnum.EXPERT_DISCOVERY: {9, 16, 18},
-    EventTypeEnum.DAUBERT_MOTIONS: {9, 11, 16, 18},
-    EventTypeEnum.FACT_DISCOVERY: {11, 18},
-    EventTypeEnum.DAUBERT_NOTICE: {11, 18},
-    EventTypeEnum.DAUBERT_HEARING: {11, 18},
-    EventTypeEnum.NORTHRUP_MATERIALS: {18},
+    EventTypeEnum.EXPERT_WITNESSES: {1, 3, 7, 11, 12, 13, 16, 17, 18, 20},
+    EventTypeEnum.EXPERT_WITNESSES_CME: {1},
     EventTypeEnum.FINAL_TRIAL_WITNESSES: {18},
     EventTypeEnum.TRIAL_WITNESS_NOTICE: {18},
-    EventTypeEnum.TRIAL_PREPARATION: {18},
-    EventTypeEnum.TRIAL_PREPARATION_NOTICE: {18},
+    
+    # Expert Related
+    EventTypeEnum.PLAINTIFF_REBUTTAL: {8, 11, 18},
+    EventTypeEnum.DEFENDANT_REBUTTAL: {8, 11, 12},
+    EventTypeEnum.EXPERT_DISCOVERY: {2, 3, 9, 10, 12, 13, 15, 16, 17, 18, 20},
+    EventTypeEnum.EXPERT_OPINION: {17, 20},
+    
+    # Motion Related
+    EventTypeEnum.AMEND_PLEADINGS: {6, 9, 12, 15, 17, 18, 20},
+    EventTypeEnum.DISPOSITIVE_MOTIONS: {1, 3, 6, 9, 12, 16, 18},
+    EventTypeEnum.DISPOSITIVE_MOTIONS_FILED: {7, 8, 13, 17, 20},
+    EventTypeEnum.DISPOSITIVE_MOTIONS_HEARD: {3, 12, 16},
+    EventTypeEnum.SUMMARY_JUDGMENT: {3, 18},
     EventTypeEnum.SUMMARY_JUDGMENT_HEARD: {18},
-    EventTypeEnum.ALL_MOTIONS: {9, 16, 18},
-    EventTypeEnum.DEPO_DESIGNATIONS: {11, 18},
-    EventTypeEnum.COUNTER_DESIGNATIONS: {18},
-    EventTypeEnum.MEDIATION: {9, 11, 16, 18},
-    EventTypeEnum.ATTORNEY_MEET: {16, 18},
-    EventTypeEnum.DEPO_OBJECTIONS: {18},
+    EventTypeEnum.PLEADING_MOTIONS: {15, 16},
     EventTypeEnum.MOTIONS_IN_LIMINE: {16, 18},
     EventTypeEnum.MOTIONS_IN_LIMINE_NOTICE: {16, 18},
-    EventTypeEnum.MOTIONS_IN_LIMINE_HEARING: {16, 18},
-    EventTypeEnum.DEFENDANT_REBUTTAL: {11},
-    EventTypeEnum.EXHIBITS_LIST: {11},
-    EventTypeEnum.JURY_INSTRUCTIONS: {11},
-    EventTypeEnum.SERVE_SCHEDULING: {16},
-    EventTypeEnum.DISPOSITIVE_MOTIONS_FILED: {16},
-    EventTypeEnum.DISPOSITIVE_MOTIONS_SERVED: {16},
-    EventTypeEnum.DISPOSITIVE_MOTIONS_HEARD: {16},
-    EventTypeEnum.PLEADING_MOTIONS: {16},
+    EventTypeEnum.ALL_MOTIONS: {9, 12, 15, 18},
     EventTypeEnum.OPEN_MOTION_CALENDAR: {16},
-    EventTypeEnum.OBJECTIONS_TO_PLEADINGS: {9}
+    EventTypeEnum.OBJECTIONS_TO_PLEADINGS: {2, 4, 7, 9, 10, 12},
+    
+    # Daubert Related
+    EventTypeEnum.DAUBERT_MOTIONS: {9, 11, 18},
+    EventTypeEnum.DAUBERT_NOTICE: {11, 18},
+    
+    # Medical Examination Related
+    EventTypeEnum.CME_EXAM: {1, 11, 13, 18},
+    EventTypeEnum.CME_REPORT: {18},
+    
+    # Evidence and Exhibit Related
+    EventTypeEnum.FACT_WITNESS_LIST: {3, 9, 12, 15, 16, 18},
+    EventTypeEnum.EXHIBITS_LIST: {11, 17, 20},
+    EventTypeEnum.SURVEILLANCE: {18},
+    EventTypeEnum.SURVEILLANCE_NOTICE: {18},
+    EventTypeEnum.NORTHRUP_MATERIALS: {18},
+    
+    # Deposition Related
+    EventTypeEnum.DEPO_DESIGNATIONS: {1, 3, 11, 15, 18},
+    EventTypeEnum.COUNTER_DESIGNATIONS: {18},
+    EventTypeEnum.DEPO_OBJECTIONS: {18},
+    
+    # Trial Preparation Related
+    EventTypeEnum.TRIAL_PREPARATION: {18},
+    EventTypeEnum.TRIAL_PREPARATION_NOTICE: {18},
+    EventTypeEnum.ATTORNEY_MEET: {1, 4, 16, 18},
+    EventTypeEnum.JURY_INSTRUCTIONS: {1, 3, 11, 15},
+    
+    # Case Management Related
+    EventTypeEnum.AGREED_CASE_MANAGEMENT: {17, 18, 20},
+    EventTypeEnum.CERTIFICATION_REQUIREMENT: {14},
+    EventTypeEnum.STATEMENT_FACTS: {17, 20},
+    EventTypeEnum.DISPUTED_FACTS: {17, 20},
+    EventTypeEnum.IDENTIFICATION_ISSUES: {17, 20},
+    
+    # Alternative Dispute Resolution Related
+    EventTypeEnum.MEDIATOR_AGREED: {6, 18},
+    EventTypeEnum.MEDIATION: {1, 2, 3, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20},
+    EventTypeEnum.FABRE_DEFENDANTS: {12, 18}
 }
 
 class EventDetail(BaseModel):
@@ -378,8 +444,8 @@ class CaseManagementOrder(BaseModel):
 
     @field_validator('number_of_trial_days')
     def validate_trial_days(cls, value):
-        if value is not None and value < 1:
-            raise ValueError("Number of trial days should always be 1 or higher.")
+        if value is not None and value < 0:
+            raise ValueError("Number of trial days should always be positive.")
         return value
 def get_document_text(document_id: str) -> str:
     """Fetch document text from API."""
@@ -569,6 +635,7 @@ if st.button("Process Document"):
         with st.spinner("Fetching document..."):
             text = get_document_text(document_id)
             complaint_date = get_complaint_filed_date(document_id)
+            print(f"Complaint Date: {complaint_date}")
             if complaint_date:
                 st.info(f"Complaint Filed Date: {complaint_date}")
             
@@ -586,7 +653,7 @@ if not st.session_state.edited_df.empty:
     st.subheader("Extracted Information")
 
     edited_df = st.data_editor(
-        display_df,
+        st.session_state.edited_df,
         use_container_width=True,
         height=600,
         hide_index=True,
