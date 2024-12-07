@@ -5,10 +5,11 @@ import json
 from datetime import datetime, timedelta
 from pydantic import BaseModel, Field, ValidationError, field_validator, ValidationInfo, PrivateAttr
 from pydantic.main import create_model
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Union
 from enum import Enum
 import instructor
 from openai import OpenAI
+from anthropic import Anthropic
 from langsmith import wrappers, traceable
 
 # Constants
@@ -16,8 +17,26 @@ API_ENDPOINT = "https://ocr.api.mx2.law/doc/{}/text?token={}"
 COMPLAINT_API_ENDPOINT = "https://sf-sync.api.mx2.dev/doc/{}/complaint-filed?salesforce_env=prod&token={}"
 API_TOKEN = st.secrets["API_KEY"]
 
+MODEL_CONFIGS = {
+    "Claude-3-Sonnet": {
+        "provider": "anthropic",
+        "model": "claude-3-5-sonnet-20241022"
+    },
+    "GPT-4o": {
+        "provider": "openai",
+        "model": "gpt-4o"
+    }
+}
+
 # Initialize OpenAI client with instructor
-client = instructor.patch(wrappers.wrap_openai(OpenAI(api_key=st.secrets["OPENAI_API_KEY"])))
+# client = instructor.patch(wrappers.wrap_openai(OpenAI(api_key=st.secrets["OPENAI_API_KEY"])))
+# client = instructor.from_anthropic(Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"]))
+def get_client(model_name: str) -> Union[OpenAI, Anthropic]:
+    config = MODEL_CONFIGS[model_name]
+    if config["provider"] == "anthropic":
+        return instructor.from_anthropic(Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"]))
+    else:
+        return instructor.patch(wrappers.wrap_openai(OpenAI(api_key=st.secrets["OPENAI_API_KEY"])))
 
 # Enums
 class CircuitCourtNumber(BaseModel):
@@ -328,6 +347,7 @@ class CaseManagementOrder(BaseModel):
                             # Skip if dependent event not calculated yet
                             continue
                         base_date = dep_event.event_date
+                        event.anchor_date = base_date
                     else:
                         # Default to filing date if no dependencies
                         base_date = self._complaint_filed_date if self._complaint_filed_date is not None else self.e_file_date
@@ -394,11 +414,16 @@ def get_complaint_filed_date(document_id: str) -> Optional[datetime]:
 def process_text(text: str, complaint_date: datetime) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Process text using LLM and return formatted dataframe."""
     try:
+        # Get client based on selected model
+        client = get_client(st.session_state.model_selector)
+        model_name = MODEL_CONFIGS[st.session_state.model_selector]["model"]
+
         # First extraction - just get circuit number
         circuit_info = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=model_name,
             response_model=CircuitCourtNumber,
             temperature=0,
+            max_tokens=1024,
             messages=[
                 {"role": "system", "content": "Extract only the circuit court number from the text."},
                 {"role": "user", "content": text},
@@ -409,16 +434,39 @@ def process_text(text: str, complaint_date: datetime) -> tuple[pd.DataFrame, pd.
         circuit_num = circuit_info.number
         DynamicCMO = CaseManagementOrder.create_model_for_circuit(circuit_num)
 
-        # Use your existing extraction logic here
-        cmo_assessment = client.chat.completions.create(
-            model="gpt-4o",
-            response_model=DynamicCMO,
-            temperature=0,
-            messages=[
-                {"role": "system", "content": f"Extract the most accurate answers to the assessment questions based on the text. The complaint_filed_date is {complaint_date}."},
-                {"role": "user", "content": text},
-            ],
-        )
+        # Get valid events for this circuit
+        valid_events = {
+            event_type for event_type, circuits in EVENT_CIRCUIT_MAPPINGS.items()
+            if circuit_num in circuits
+        }
+
+        try:
+            # Use your existing extraction logic here
+            cmo_assessment = client.chat.completions.create(
+                model=model_name,
+                response_model=DynamicCMO,
+                temperature=0,
+                max_tokens=8192,
+                messages=[
+                    {"role": "system", "content": f"""
+                    Extract the most accurate answers to the assessment questions based on the text. The complaint_filed_date is {complaint_date}.
+                    IMPORTANT: For any 'depends_on' field, you must use EXACTLY one of these valid event types:
+                    {[e.value for e in valid_events]}
+                    
+                    Do not use raw text descriptions for dependencies.
+                    """},
+                    {"role": "user", "content": text},
+                    # {"role": "system", "content": f"Extract the most accurate answers to the assessment questions based on the text. The complaint_filed_date is {complaint_date}."},
+                    # {"role": "user", "content": text},
+                ],
+            )
+        except ValidationError as e:
+            print("Validation Error Details:")
+            for error in e.errors():
+                print(f"Field: {error['loc']}")
+                print(f"Invalid Value: {error['input']}")
+                print(f"Error: {error['msg']}\n")
+            raise
 
         # Create instance
         cmo_data = cmo_assessment.dict()
@@ -503,6 +551,11 @@ def format_date(date):
 # Streamlit UI
 st.title("Case Management Order Extraction")
 
+selected_model = st.selectbox(
+    "Select Model",
+    options=list(MODEL_CONFIGS.keys()),
+    key="model_selector"
+)
 
 # Input field for document ID with persistent key
 document_id = st.text_input("Enter Document ID (e.g., aDu3c00000DYjjiCAD)", key="doc_id_input")
@@ -525,38 +578,28 @@ if st.button("Process Document"):
                 
             if display_df is not None and csv_df is not None:
                 st.success("Document processed successfully!")
-                display_df['Correct'] = False
-                st.session_state.edited_df = display_df
-                st.session_state.csv_df = csv_df
+                st.session_state.edited_df = display_df.copy()
+                st.session_state.csv_df = csv_df.copy()
 
 # Display the dataframe if it exists
 if not st.session_state.edited_df.empty:
     st.subheader("Extracted Information")
 
-    # Apply row highlighting based on checkbox state
-    def highlight_completed(row):
-        return ['background-color: #90EE90' if row['Correct'] else '' for _ in row]
-    
-    styled_df = st.session_state.edited_df.style.apply(highlight_completed, axis=1)
-
     edited_df = st.data_editor(
-        styled_df,
-        column_config={
-            "Correct": st.column_config.CheckboxColumn(
-                "Correct",
-                help="Mark as completed",
-                default=False,
-            )
-        },
+        display_df,
         use_container_width=True,
         height=600,
         hide_index=True,
-        disabled=False,
         key="data_editor"
     )
-    st.session_state.edited_df = edited_df
+    # Update state only if changes occurred
+    # if edited_df is not None:
+    #     st.session_state.edited_df = edited_df.copy()
+    # st.session_state.edited_df = edited_df
+    # if edited_df is not None:
+    #     st.session_state.edited_df = edited_df
 
-    # st.dataframe(styled_df, use_container_width=True)
+    # st.dataframe(display_df, use_container_width=True)
     
     # Add download button with CSV-optimized data
     if 'csv_df' in st.session_state:
